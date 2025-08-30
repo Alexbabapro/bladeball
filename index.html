@@ -1,0 +1,365 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blade Ball Clone</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: black; }
+        canvas { display: block; }
+        #menu { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            color: white; font-family: Arial, sans-serif; text-align: center; 
+            background: rgba(0,0,0,0.8); padding: 20px; 
+        }
+        #gameOver { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            color: red; font-size: 48px; font-family: Arial, sans-serif; 
+            text-align: center; display: none; 
+        }
+        #score { 
+            position: absolute; top: 20px; left: 20px; 
+            color: white; font-family: Arial, sans-serif; font-size: 24px; 
+        }
+        #speed { 
+            position: absolute; top: 20px; right: 20px; 
+            color: white; font-family: Arial, sans-serif; font-size: 24px; 
+        }
+        button { 
+            padding: 10px 20px; margin: 10px; font-size: 18px; cursor: pointer; 
+            background: #333; color: white; border: none; border-radius: 5px; 
+        }
+        button:hover { background: #555; }
+    </style>
+</head>
+<body>
+    <div id="menu">
+        <h1>Blade Ball Clone</h1>
+        <p>Bot Zorluk Seviyesini Seç:</p>
+        <button onclick="startGame(0.6)">Kolay</button>
+        <button onclick="startGame(0.8)">Orta</button>
+        <button onclick="startGame(1.0)">Pro</button>
+    </div>
+    <div id="gameOver">
+        <span id="gameOverText">OYUN BİTTİ!</span> Skor: <span id="finalScore">0</span><br>
+        <button onclick="restartGame()">Yeniden Başlat</button>
+    </div>
+    <div id="score">Skor: 0</div>
+    <div id="speed">Hız: 5 km/s</div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script>
+        let botDifficulty = 0.6;
+        let gameStarted = false;
+        let score = 0;
+        let jumpCount = 0;
+        let ballSpeed = 5;
+
+        // Three.js setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        camera.position.set(0, 12, 35);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const pointLight = new THREE.PointLight(0xffffff, 1, 100);
+        pointLight.position.set(0, 10, 0);
+        scene.add(pointLight);
+
+        // Player
+        const playerGeo = new THREE.BoxGeometry(1, 1, 1);
+        const playerMat = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+        const player = new THREE.Mesh(playerGeo, playerMat);
+        player.position.set(0, 0.5, 0);
+        scene.add(player);
+
+        // Bot
+        const botGeo = new THREE.BoxGeometry(1, 1, 1);
+        const botMat = new THREE.MeshStandardMaterial({ color: 0x0000ff });
+        const bot = new THREE.Mesh(botGeo, botMat);
+        bot.position.set(15, 0.5, 0);
+        scene.add(bot);
+
+        // Ball
+        const ballGeo = new THREE.SphereGeometry(0.5, 32, 32);
+        const ballMat = new THREE.MeshStandardMaterial({ color: 0x808080 });
+        const ball = new THREE.Mesh(ballGeo, ballMat);
+        ball.position.set(0, 1, -5);
+        scene.add(ball);
+        let ballDirection = new THREE.Vector3(0, 0, 1);
+        let ballTarget = player;
+
+        // Floor
+        const floorGeo = new THREE.PlaneGeometry(40, 40);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        scene.add(floor);
+
+        // Walls (40x40 arena)
+        const wallGeo = new THREE.BoxGeometry(40, 5, 0.2);
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+        const walls = [
+            new THREE.Mesh(wallGeo, wallMat), // North
+            new THREE.Mesh(wallGeo, wallMat), // South
+            new THREE.Mesh(wallGeo, wallMat), // East
+            new THREE.Mesh(wallGeo, wallMat)  // West
+        ];
+        walls[0].position.set(0, 2.5, -20);
+        walls[1].position.set(0, 2.5, 20);
+        walls[2].position.set(20, 2.5, 0);
+        walls[2].rotation.y = Math.PI / 2;
+        walls[3].position.set(-20, 2.5, 0);
+        walls[3].rotation.y = Math.PI / 2;
+        walls.forEach(wall => scene.add(wall));
+
+        // Controls
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let jumpVelocity = 0, isJumping = false;
+        let velocity = new THREE.Vector3();
+        const clock = new THREE.Clock();
+
+        document.addEventListener('keydown', (event) => {
+            if (!gameStarted) return;
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': 
+                    if (jumpCount < 2) { 
+                        jumpVelocity = 8; 
+                        isJumping = true; 
+                        jumpCount++; 
+                    } 
+                    break;
+            }
+        });
+        document.addEventListener('keyup', (event) => {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        });
+
+        // AudioContext for parry sound
+        let audioContext = null;
+        function playParrySound() {
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            oscillator.type = 'square';
+            oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.5);
+        }
+
+        // Parry on left click
+        let canParry = true;
+        document.addEventListener('click', () => {
+            if (!gameStarted || !canParry) return;
+            if (ballTarget === player && isColliding(player, ball, 1.2)) {
+                ballDirection = bot.position.clone().sub(player.position).normalize();
+                ballSpeed += 5;
+                ballTarget = bot;
+                ball.material.color.set(0x808080);
+                score++;
+                document.getElementById('score').innerText = `Skor: ${score}`;
+                document.getElementById('speed').innerText = `Hız: ${ballSpeed.toFixed(0)} km/s`;
+                playParrySound();
+                canParry = false;
+                setTimeout(() => canParry = true, 500);
+            }
+        });
+
+        // Collision detection (Box-Sphere with radius adjustment)
+        function isColliding(box, sphere, radius = 1.0) {
+            const boxBounds = new THREE.Box3().setFromObject(box);
+            const sphereBounds = new THREE.Sphere(sphere.position, sphere.geometry.parameters.radius * radius);
+            return boxBounds.intersectsSphere(sphereBounds);
+        }
+
+        // Start game
+        function startGame(difficulty) {
+            botDifficulty = difficulty;
+            gameStarted = true;
+            score = 0;
+            ballSpeed = 5;
+            ball.position.set(0, 1, -5);
+            ballTarget = player;
+            ball.material.color.set(0xff0000);
+            document.getElementById('menu').style.display = 'none';
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('score').innerText = `Skor: 0`;
+            document.getElementById('speed').innerText = `Hız: 5 km/s`;
+            player.position.set(0, 0.5, 0);
+            bot.position.set(15, 0.5, 0);
+        }
+
+        // Restart game
+        function restartGame() {
+            gameStarted = false;
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('menu').style.display = 'block';
+        }
+
+        // Bot AI
+        function botAI(delta) {
+            if (ballTarget === bot && isColliding(bot, ball, 1.2)) {
+                if (Math.random() < botDifficulty) {
+                    ballDirection = player.position.clone().sub(bot.position).normalize();
+                    ballSpeed += 5;
+                    ballTarget = player;
+                    ball.material.color.set(0xff0000);
+                    document.getElementById('speed').innerText = `Hız: ${ballSpeed.toFixed(0)} km/s`;
+                    playParrySound();
+                } else {
+                    // Bot topu kaçırırsa elenir
+                    document.getElementById('gameOver').style.display = 'block';
+                    document.getElementById('gameOverText').innerText = 'KAZANDIN! Bot Elendi!';
+                    document.getElementById('finalScore').innerText = score;
+                    gameStarted = false;
+                }
+            }
+            // Bot hareketi: Topu takip + daha fazla rastgelelik
+            const moveDir = ball.position.clone().sub(bot.position).normalize();
+            const randomDir = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+            const finalDir = moveDir.lerp(randomDir, 0.6 * (1 - botDifficulty)); // Daha fazla rastgelelik
+            const botSpeed = 8 * botDifficulty;
+            bot.position.x += finalDir.x * botSpeed * delta;
+            bot.position.z += finalDir.z * botSpeed * delta;
+
+            // Bot wall collision
+            bot.position.x = Math.max(-19.5, Math.min(19.5, bot.position.x));
+            bot.position.z = Math.max(-19.5, Math.min(19.5, bot.position.z));
+        }
+
+        // Game loop
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!gameStarted) {
+                renderer.render(scene, camera);
+                return;
+            }
+
+            const delta = clock.getDelta();
+            velocity.x *= 0.9;
+            velocity.z *= 0.9;
+            if (moveForward) velocity.z -= 12 * delta;
+            if (moveBackward) velocity.z += 12 * delta;
+            if (moveLeft) velocity.x -= 12 * delta;
+            if (moveRight) velocity.x += 12 * delta;
+
+            // Player movement and wall collision
+            player.position.add(velocity);
+            player.position.x = Math.max(-19.5, Math.min(19.5, player.position.x));
+            player.position.z = Math.max(-19.5, Math.min(19.5, player.position.z));
+
+            // Jumping
+            if (isJumping) {
+                player.position.y += jumpVelocity * delta;
+                jumpVelocity -= 20 * delta;
+                if (player.position.y <= 0.5) {
+                    player.position.y = 0.5;
+                    isJumping = false;
+                    jumpVelocity = 0;
+                    jumpCount = 0;
+                }
+            }
+
+            // Top hareketi ve takip
+            if (ballTarget === player) {
+                ballDirection = player.position.clone().sub(ball.position).normalize();
+                ball.material.color.set(0xff0000);
+            } else {
+                ballDirection = bot.position.clone().sub(ball.position).normalize();
+                ball.material.color.set(0x808080);
+            }
+            ball.position.add(ballDirection.clone().multiplyScalar(ballSpeed * delta));
+
+            // Wall collision
+            if (Math.abs(ball.position.x) > 19.5) {
+                ballDirection.x *= -1;
+                ball.position.x = Math.sign(ball.position.x) * 19.5;
+            }
+            if (Math.abs(ball.position.z) > 19.5) {
+                ballDirection.z *= -1;
+                ball.position.z = Math.sign(ball.position.z) * 19.5;
+            }
+
+            // Game over check
+            if (ballTarget === player && isColliding(player, ball, 1.0) && !canParry) {
+                document.getElementById('gameOver').style.display = 'block';
+                document.getElementById('gameOverText').innerText = 'OYUN BİTTİ!';
+                document.getElementById('finalScore').innerText = score;
+                gameStarted = false;
+            }
+
+            // Bot logic
+            botAI(delta);
+
+            // Fixed camera
+            camera.position.set(player.position.x, player.position.y + 12, player.position.z + 35);
+            camera.lookAt(player.position);
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
